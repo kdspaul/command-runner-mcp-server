@@ -1,4 +1,4 @@
-module github.com/kdspaul/command-runner-mcp/new-impl
+module github.com/kdspaul/command-runner-mcp-server
 
 go 1.25.4
 
