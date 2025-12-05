@@ -5,7 +5,28 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// TestRegisterCatTool verifies the cat tool registers without panicking
+// This catches invalid jsonschema struct tags at test time
+func TestRegisterCatTool(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	RegisterCatTool(server)
+}
+
+// TestRegisterLsTool verifies the ls tool registers without panicking
+func TestRegisterLsTool(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	RegisterLsTool(server)
+}
+
+// TestRegisterBazelTool verifies the bazel tool registers without panicking
+func TestRegisterBazelTool(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	RegisterBazelTool(server)
+}
 
 // Test CatInput validation
 func TestCatInputValidation(t *testing.T) {

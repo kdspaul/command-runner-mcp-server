@@ -8,7 +8,7 @@ import (
 
 // CatInput defines the input for the cat tool
 type CatInput struct {
-	Path string `json:"path" jsonschema:"description=Path to the file to read"`
+	Path string `json:"path" jsonschema_description:"Path to the file to read"`
 }
 
 // RegisterCatTool registers the cat tool with the server
@@ -36,7 +36,7 @@ func RegisterCatTool(server *mcp.Server) {
 
 // LsInput defines the input for the ls tool
 type LsInput struct {
-	Path string `json:"path" jsonschema:"description=Path to the directory to list"`
+	Path string `json:"path" jsonschema_description:"Path to the directory to list"`
 }
 
 // RegisterLsTool registers the ls tool with the server
@@ -64,8 +64,8 @@ func RegisterLsTool(server *mcp.Server) {
 
 // BazelInput defines the input for the bazel tool
 type BazelInput struct {
-	Subcommand string `json:"subcommand" jsonschema:"description=Bazel subcommand (build or test)"`
-	Target     string `json:"target" jsonschema:"description=Bazel target (e.g. //path/to:target)"`
+	Subcommand string `json:"subcommand" jsonschema_description:"Bazel subcommand (build or test)"`
+	Target     string `json:"target" jsonschema_description:"Bazel target (e.g. //path/to:target)"`
 }
 
 // AllowedBazelSubcommands defines valid bazel subcommands
