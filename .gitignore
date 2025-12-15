@@ -1,4 +1,2 @@
-command-runner-mcp
-command-runner-mcp-server
-dist/
-.claude/
+/target
+.mcp.json
