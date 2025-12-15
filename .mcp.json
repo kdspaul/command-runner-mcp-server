@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "command-runner": {
+      "type": "stdio",
+      "command": "dist/darwin-arm64/command-runner-mcp-server",
+      "args": [],
+      "env": {}
+    }
+  }
+}
