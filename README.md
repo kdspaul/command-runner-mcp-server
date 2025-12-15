@@ -2,6 +2,13 @@
 
 A Model Context Protocol (MCP) server written in Rust that provides tools for listing directory contents and running git commands, with built-in output transformations.
 
+This could be used to limit the commands that Cursor / Claude Code can run. Sandbox implementations are not standard across tools so if company policy requires that auto-run can only work within sandbox and certain commands do not then auto-run for MCP servers tools can be an easy way to better UX.
+
+The original vision for this MCP server was to have logs stream back to the client but clients still expect the full output in the end so we've switched to stdio.
+In my experiments, Rust had the best streaming support so in the future if the MCP clients are able to read and use output streamed to them then we can switch to streaming.
+
+The transformation tools are implemented natively and do not support all the features of the commands that they are emulating.
+
 ## Tools
 
 ### ls_tool
