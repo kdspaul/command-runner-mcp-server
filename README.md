@@ -67,15 +67,30 @@ Get first 10 lines after filtering:
 
 ## Security
 
-**Shell Injection Protection:**
-- The following characters are blocked in all arguments: `; | & $ \` ( ) { } [ ] < > ' " \ * ? ! #`
-- Use the built-in transformation parameters (grep_pattern, sed_pattern, etc.) instead of shell operators
+### Path Blocking
 
-**Path Restrictions:**
-- Access to `/blocked` and its subdirectories is denied (configurable)
+The server blocks access to specific paths and all their subdirectories. Any attempt to access these paths will return an error.
 
-**Git Command Restrictions:**
-- Only `status`, `add`, `commit`, and `checkout` subcommands are allowed
+**Currently blocked paths:**
+- `/blocked`
+- `/also-blocked`
+
+Path blocking features:
+- Blocks both exact path matches and all subdirectories (e.g., `/blocked/subdir`)
+- Resolves relative paths and symlinks to prevent bypass attempts
+- Handles path traversal attempts (e.g., `/../blocked`)
+
+To modify blocked paths, edit the `BLOCKED_PATHS` constant in `src/security.rs`.
+
+### Shell Injection Protection
+
+The following characters are blocked in all arguments: `; | & $ \` ( ) { } [ ] < > ' " \ * ? ! #`
+
+Use the built-in transformation parameters (grep_pattern, sed_pattern, etc.) instead of shell operators.
+
+### Git Command Restrictions
+
+Only `status`, `add`, `commit`, and `checkout` subcommands are allowed.
 
 ## Building
 

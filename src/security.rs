@@ -12,8 +12,8 @@ const SHELL_INJECTION_CHARS_DISPLAY: &str = "; | & $ ` ( ) { } [ ] < > ' \" \\ *
 /// Hint about available transformations for error messages
 const TRANSFORM_HINT: &str = "Use grep_pattern, sed_pattern, head, tail, sort, or unique parameters to filter/transform output instead of shell operators.";
 
-/// The blocked path prefix (fictional path for demonstration)
-const BLOCKED_PATH: &str = "/blocked";
+/// The blocked path prefixes (fictional paths for demonstration)
+const BLOCKED_PATHS: &[&str] = &["/blocked", "/also-blocked"];
 
 /// Validation error types
 #[derive(Debug, PartialEq)]
@@ -59,15 +59,16 @@ pub fn validate_argument(arg: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Resolve a path and check if it matches or is under the blocked path
-fn is_blocked_path(path: &str) -> bool {
+/// Resolve a path and check if it matches or is under any blocked path
+/// Returns the matched blocked path if found, None otherwise
+fn find_blocked_path(path: &str) -> Option<&'static str> {
     // Resolve the path to catch relative path traversal to blocked directories
     let resolved_path = if path.starts_with('/') {
         Path::new(path).to_path_buf()
     } else {
         match std::env::current_dir() {
             Ok(cwd) => cwd.join(path),
-            Err(_) => return false, // Can't resolve, let the command fail naturally
+            Err(_) => return None, // Can't resolve, let the command fail naturally
         }
     };
 
@@ -77,15 +78,20 @@ fn is_blocked_path(path: &str) -> bool {
         Err(_) => resolved_path, // Path might not exist yet, use as-is
     };
 
-    // Check if path is or is under the blocked path
+    // Check if path is or is under any blocked path
     let path_str = canonical_path.to_string_lossy();
-    path_str == BLOCKED_PATH || path_str.starts_with(&format!("{}/", BLOCKED_PATH))
+    for blocked in BLOCKED_PATHS {
+        if path_str == *blocked || path_str.starts_with(&format!("{}/", blocked)) {
+            return Some(blocked);
+        }
+    }
+    None
 }
 
 /// Validate that a path is not blocked
 pub fn validate_path(path: &str) -> Result<(), ValidationError> {
-    if is_blocked_path(path) {
-        return Err(ValidationError::BlockedPath(BLOCKED_PATH.to_string()));
+    if let Some(blocked) = find_blocked_path(path) {
+        return Err(ValidationError::BlockedPath(blocked.to_string()));
     }
     Ok(())
 }
@@ -121,19 +127,29 @@ mod tests {
     }
 
     #[test]
-    fn test_is_blocked_path_allows_safe_paths() {
+    fn test_find_blocked_path_allows_safe_paths() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        assert!(!is_blocked_path(temp_dir.path().to_str().unwrap()));
+        assert!(find_blocked_path(temp_dir.path().to_str().unwrap()).is_none());
     }
 
     #[test]
-    fn test_is_blocked_path_blocks_exact() {
-        assert!(is_blocked_path("/blocked"));
+    fn test_find_blocked_path_blocks_exact() {
+        assert_eq!(find_blocked_path("/blocked"), Some("/blocked"));
     }
 
     #[test]
-    fn test_is_blocked_path_blocks_subpath() {
-        assert!(is_blocked_path("/blocked/subdir"));
+    fn test_find_blocked_path_blocks_subpath() {
+        assert_eq!(find_blocked_path("/blocked/subdir"), Some("/blocked"));
+    }
+
+    #[test]
+    fn test_find_blocked_path_blocks_also_blocked_exact() {
+        assert_eq!(find_blocked_path("/also-blocked"), Some("/also-blocked"));
+    }
+
+    #[test]
+    fn test_find_blocked_path_blocks_also_blocked_subpath() {
+        assert_eq!(find_blocked_path("/also-blocked/subdir"), Some("/also-blocked"));
     }
 
     #[test]
