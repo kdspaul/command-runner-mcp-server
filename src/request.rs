@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::security::{Validatable, ValidationError};
+use crate::security::{validate_argument, validate_env_var, validate_path, Validatable, ValidationError};
 
 /// Execution context extracted from ToolRequest for command execution
 #[derive(Debug, Clone, Default)]
@@ -85,7 +85,27 @@ pub struct ToolRequest<T> {
 
 impl<T: Validatable> Validatable for ToolRequest<T> {
     fn validate(&self) -> Result<(), ValidationError> {
-        self.inner.validate()
+        // Validate inner request first
+        self.inner.validate()?;
+
+        // Validate working_dir if provided
+        // - validate_argument checks for shell injection chars
+        // - validate_path checks against blocked paths (resolves symlinks and ..)
+        if let Some(ref dir) = self.working_dir {
+            validate_argument(dir)?;
+            validate_path(dir)?;
+        }
+
+        // Validate environment variables if provided
+        // - checks for dangerous env vars (LD_PRELOAD, PATH, etc.)
+        // - checks for shell injection in both key and value
+        if let Some(ref env) = self.env {
+            for (key, value) in env {
+                validate_env_var(key, value)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -438,5 +458,71 @@ mod tests {
             Transformation::Grep,
             Transformation::Sort,
         ]));
+    }
+
+    // ToolRequest validation tests for working_dir and env
+    use crate::security::ValidationError;
+
+    #[test]
+    fn test_validate_rejects_shell_injection_in_working_dir() {
+        let json = r#"{
+            "path": "/tmp",
+            "working_dir": "/tmp; echo pwned"
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::ShellInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_rejects_blocked_path_in_working_dir() {
+        let json = r#"{
+            "path": "/tmp",
+            "working_dir": "/blocked"
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::BlockedPath(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_rejects_dangerous_env_var() {
+        let json = r#"{
+            "path": "/tmp",
+            "env": {"LD_PRELOAD": "/evil/lib.so"}
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::DangerousEnvVar(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_rejects_shell_injection_in_env_value() {
+        let json = r#"{
+            "path": "/tmp",
+            "env": {"MY_VAR": "$(whoami)"}
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::ShellInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_allows_safe_working_dir_and_env() {
+        let json = r#"{
+            "path": "/tmp",
+            "working_dir": "/tmp",
+            "env": {"DEBUG": "true", "LOG_LEVEL": "info"}
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(req.validate().is_ok());
     }
 }

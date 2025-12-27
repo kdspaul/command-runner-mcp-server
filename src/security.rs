@@ -3,7 +3,7 @@ use std::path::Path;
 /// Characters that could be used for shell injection
 const SHELL_INJECTION_CHARS: &[char] = &[
     ';', '|', '&', '$', '`', '(', ')', '{', '}', '[', ']', '<', '>', '\n', '\r', '\'', '"', '\\',
-    '*', '?', '!', '#',
+    '*', '?', '!', '#', '\0', // null byte can truncate strings in some contexts
 ];
 
 /// Human-readable list of forbidden characters for error messages
@@ -15,11 +15,35 @@ const TRANSFORM_HINT: &str = "Use grep_pattern, sed_pattern, head, tail, sort, o
 /// The blocked path prefixes (fictional paths for demonstration)
 const BLOCKED_PATHS: &[&str] = &["/blocked", "/also-blocked"];
 
+/// Environment variable names that could be used for code injection or privilege escalation
+const DANGEROUS_ENV_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "IFS",
+    "BASH_ENV",
+    "ENV",
+    "CDPATH",
+    "GLOBIGNORE",
+    "BASH_FUNC_",
+    "PS1",
+    "PS2",
+    "PS4",
+    "PROMPT_COMMAND",
+];
+
 /// Validation error types
 #[derive(Debug, PartialEq)]
 pub enum ValidationError {
     ShellInjection(String),
     BlockedPath(String),
+    FlagInjection(String),
+    DangerousEnvVar(String),
 }
 
 impl std::fmt::Display for ValidationError {
@@ -34,6 +58,20 @@ impl std::fmt::Display for ValidationError {
             }
             ValidationError::BlockedPath(path) => {
                 write!(f, "Error: Reading path '{}' is not allowed", path)
+            }
+            ValidationError::FlagInjection(arg) => {
+                write!(
+                    f,
+                    "Error: '{}' looks like a flag (starts with '-'). Arguments cannot start with '-' to prevent flag injection.",
+                    arg
+                )
+            }
+            ValidationError::DangerousEnvVar(var) => {
+                write!(
+                    f,
+                    "Error: Setting environment variable '{}' is not allowed for security reasons.",
+                    var
+                )
             }
         }
     }
@@ -55,6 +93,44 @@ pub fn contains_shell_injection(s: &str) -> bool {
 pub fn validate_argument(arg: &str) -> Result<(), ValidationError> {
     if contains_shell_injection(arg) {
         return Err(ValidationError::ShellInjection(arg.to_string()));
+    }
+    Ok(())
+}
+
+/// Check if a string looks like a command-line flag (starts with -)
+pub fn is_flag_like(s: &str) -> bool {
+    s.starts_with('-') && s != "-" && s != "--"
+}
+
+/// Validate that an argument doesn't look like a flag
+/// Use this for positional arguments that shouldn't be flags
+pub fn validate_not_flag(arg: &str) -> Result<(), ValidationError> {
+    if is_flag_like(arg) {
+        return Err(ValidationError::FlagInjection(arg.to_string()));
+    }
+    Ok(())
+}
+
+/// Check if an environment variable name is dangerous
+fn is_dangerous_env_var(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    DANGEROUS_ENV_VARS
+        .iter()
+        .any(|&dangerous| upper == dangerous || upper.starts_with(dangerous))
+}
+
+/// Validate that an environment variable is safe to set
+pub fn validate_env_var(name: &str, value: &str) -> Result<(), ValidationError> {
+    // Check for dangerous variable names
+    if is_dangerous_env_var(name) {
+        return Err(ValidationError::DangerousEnvVar(name.to_string()));
+    }
+    // Check for shell injection in both name and value
+    if contains_shell_injection(name) {
+        return Err(ValidationError::ShellInjection(name.to_string()));
+    }
+    if contains_shell_injection(value) {
+        return Err(ValidationError::ShellInjection(value.to_string()));
     }
     Ok(())
 }
@@ -164,5 +240,121 @@ mod tests {
     fn test_validate_path_ok_for_allowed() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         assert!(validate_path(temp_dir.path().to_str().unwrap()).is_ok());
+    }
+
+    // Null byte detection
+    #[test]
+    fn test_contains_shell_injection_detects_null_byte() {
+        assert!(contains_shell_injection("file\0.txt"));
+    }
+
+    // Flag injection tests
+    #[test]
+    fn test_is_flag_like_detects_single_dash() {
+        assert!(is_flag_like("-a"));
+        assert!(is_flag_like("-verbose"));
+    }
+
+    #[test]
+    fn test_is_flag_like_detects_double_dash() {
+        assert!(is_flag_like("--help"));
+        assert!(is_flag_like("--version"));
+    }
+
+    #[test]
+    fn test_is_flag_like_allows_bare_dashes() {
+        // Single dash (stdin) and double dash (end of options) are allowed
+        assert!(!is_flag_like("-"));
+        assert!(!is_flag_like("--"));
+    }
+
+    #[test]
+    fn test_is_flag_like_allows_normal_paths() {
+        assert!(!is_flag_like("file.txt"));
+        assert!(!is_flag_like("/path/to/file"));
+        assert!(!is_flag_like("path/with-dash/file"));
+    }
+
+    #[test]
+    fn test_validate_not_flag_rejects_flags() {
+        assert!(matches!(
+            validate_not_flag("--help"),
+            Err(ValidationError::FlagInjection(_))
+        ));
+        assert!(matches!(
+            validate_not_flag("-rf"),
+            Err(ValidationError::FlagInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_not_flag_allows_normal_args() {
+        assert!(validate_not_flag("file.txt").is_ok());
+        assert!(validate_not_flag("/path/to/file").is_ok());
+        assert!(validate_not_flag(".").is_ok());
+    }
+
+    // Dangerous env var tests
+    #[test]
+    fn test_is_dangerous_env_var_blocks_ld_preload() {
+        assert!(is_dangerous_env_var("LD_PRELOAD"));
+        assert!(is_dangerous_env_var("ld_preload")); // case insensitive
+    }
+
+    #[test]
+    fn test_is_dangerous_env_var_blocks_path() {
+        assert!(is_dangerous_env_var("PATH"));
+    }
+
+    #[test]
+    fn test_is_dangerous_env_var_blocks_dyld() {
+        assert!(is_dangerous_env_var("DYLD_INSERT_LIBRARIES"));
+        assert!(is_dangerous_env_var("DYLD_LIBRARY_PATH"));
+    }
+
+    #[test]
+    fn test_is_dangerous_env_var_blocks_bash_func_prefix() {
+        assert!(is_dangerous_env_var("BASH_FUNC_foo"));
+    }
+
+    #[test]
+    fn test_is_dangerous_env_var_allows_safe_vars() {
+        assert!(!is_dangerous_env_var("MY_VAR"));
+        assert!(!is_dangerous_env_var("FOO"));
+        assert!(!is_dangerous_env_var("DEBUG"));
+    }
+
+    #[test]
+    fn test_validate_env_var_rejects_dangerous_names() {
+        assert!(matches!(
+            validate_env_var("LD_PRELOAD", "/evil/lib.so"),
+            Err(ValidationError::DangerousEnvVar(_))
+        ));
+        assert!(matches!(
+            validate_env_var("PATH", "/evil/bin"),
+            Err(ValidationError::DangerousEnvVar(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_env_var_rejects_shell_injection_in_name() {
+        assert!(matches!(
+            validate_env_var("VAR;rm", "value"),
+            Err(ValidationError::ShellInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_env_var_rejects_shell_injection_in_value() {
+        assert!(matches!(
+            validate_env_var("MY_VAR", "$(whoami)"),
+            Err(ValidationError::ShellInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_env_var_allows_safe_vars() {
+        assert!(validate_env_var("MY_VAR", "safe_value").is_ok());
+        assert!(validate_env_var("DEBUG", "true").is_ok());
     }
 }

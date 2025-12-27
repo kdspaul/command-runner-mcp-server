@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::executor::run_command;
 use crate::request::ExecutionContext;
-use crate::security::{validate_argument, validate_path, Validatable, ValidationError};
+use crate::security::{validate_argument, validate_not_flag, validate_path, Validatable, ValidationError};
 
 /// Request parameters for the ls tool
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -21,6 +21,7 @@ fn default_path() -> String {
 impl Validatable for LsRequest {
     fn validate(&self) -> Result<(), ValidationError> {
         validate_argument(&self.path)?;
+        validate_not_flag(&self.path)?; // Prevent path from being interpreted as a flag
         validate_path(&self.path)?;
         Ok(())
     }
@@ -172,6 +173,36 @@ mod tests {
     fn test_validate_allows_other_paths() {
         let req = LsRequest {
             path: "/tmp".to_string(),
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_blocks_flag_injection_single_dash() {
+        let req = LsRequest {
+            path: "-la".to_string(),
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::FlagInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_blocks_flag_injection_double_dash() {
+        let req = LsRequest {
+            path: "--help".to_string(),
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::FlagInjection(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_allows_paths_with_internal_dashes() {
+        let req = LsRequest {
+            path: "/path/with-dash/file".to_string(),
         };
         assert!(req.validate().is_ok());
     }
