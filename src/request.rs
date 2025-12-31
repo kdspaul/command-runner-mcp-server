@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::security::{validate_argument, validate_env_var, validate_path, Validatable, ValidationError};
+use crate::security::{validate_absolute_path, validate_argument, validate_env_var, validate_no_traversal, validate_path, Validatable, ValidationError};
 
 /// Execution context extracted from ToolRequest for command execution
 #[derive(Debug, Clone, Default)]
@@ -89,11 +89,11 @@ impl<T: Validatable> Validatable for ToolRequest<T> {
         self.inner.validate()?;
 
         // Validate working_dir if provided
-        // - validate_argument checks for shell injection chars
-        // - validate_path checks against blocked paths (resolves symlinks and ..)
         if let Some(ref dir) = self.working_dir {
-            validate_argument(dir)?;
-            validate_path(dir)?;
+            validate_argument(dir)?;           // Check for shell injection chars
+            validate_absolute_path(dir)?;      // Must be absolute path
+            validate_no_traversal(dir)?;       // No ".." allowed
+            validate_path(dir)?;               // Check against blocked paths
         }
 
         // Validate environment variables if provided
@@ -477,19 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rejects_blocked_path_in_working_dir() {
-        let json = r#"{
-            "path": "/tmp",
-            "working_dir": "/blocked"
-        }"#;
-        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            req.validate(),
-            Err(ValidationError::BlockedPath(_))
-        ));
-    }
-
-    #[test]
     fn test_validate_rejects_dangerous_env_var() {
         let json = r#"{
             "path": "/tmp",
@@ -524,5 +511,31 @@ mod tests {
         }"#;
         let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
         assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_path_traversal_in_working_dir() {
+        let json = r#"{
+            "path": "/tmp",
+            "working_dir": "/tmp/../etc"
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::PathTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_rejects_relative_working_dir() {
+        let json = r#"{
+            "path": "/tmp",
+            "working_dir": "relative/path"
+        }"#;
+        let req: ToolRequest<LsRequest> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::RelativeWorkingDir(_))
+        ));
     }
 }

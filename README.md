@@ -41,7 +41,7 @@ All tools support the following optional parameters for output transformation an
 
 **Execution Control:**
 - `timeout_ms`: Command timeout in milliseconds (default: 180000 = 3 minutes)
-- `working_dir`: Working directory for command execution
+- `working_dir`: Working directory for command execution (must be an absolute path starting with `/`)
 - `env`: Environment variables as `{"KEY": "value"}`
 
 **Default Transformation Order:** grep → sort → unique → head → tail
@@ -67,26 +67,45 @@ Get first 10 lines after filtering:
 
 ## Security
 
+### Path Restrictions
+
+**Path traversal prevention:**
+- Paths must not contain `..` (parent directory references are blocked)
+- This applies to both `path` parameters and `working_dir`
+
+**Absolute working directory requirement:**
+- `working_dir` must be an absolute path (starting with `/`)
+- Relative working directories are rejected
+
 ### Path Blocking
 
-The server blocks access to specific paths and all their subdirectories. Any attempt to access these paths will return an error.
+The server can block access to specific paths and all their subdirectories. Any attempt to access these paths will return an error.
 
-**Currently blocked paths:**
-- `/blocked`
-- `/also-blocked`
+**Configuration via environment variable:**
+```bash
+export BLOCKED_PATHS="/etc;/root;/home/user/.ssh"
+```
+
+Paths are separated by semicolons (`;`). The server reads this at startup.
 
 Path blocking features:
-- Blocks both exact path matches and all subdirectories (e.g., `/blocked/subdir`)
-- Resolves relative paths and symlinks to prevent bypass attempts
-- Handles path traversal attempts (e.g., `/../blocked`)
-
-To modify blocked paths, edit the `BLOCKED_PATHS` constant in `src/security.rs`.
+- Blocks both exact path matches and all subdirectories (e.g., `/etc/passwd` is blocked if `/etc` is blocked)
+- Resolves symlinks to prevent bypass attempts (e.g., a symlink to a blocked path is also blocked)
 
 ### Shell Injection Protection
 
 The following characters are blocked in all arguments: `; | & $ \` ( ) { } [ ] < > ' " \ * ? ! #`
 
-Use the built-in transformation parameters (grep_pattern, sed_pattern, etc.) instead of shell operators.
+Use the built-in transformation parameters (grep_pattern, head, tail, etc.) instead of shell operators.
+
+### Dangerous Environment Variables
+
+The following environment variables cannot be set via the `env` parameter:
+- `LD_PRELOAD`, `LD_LIBRARY_PATH` (library injection)
+- `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` (macOS library injection)
+- `PATH`, `HOME`, `USER`, `SHELL` (privilege escalation)
+- `BASH_ENV`, `ENV`, `BASH_FUNC_*` (code execution)
+- And others that could affect command behavior
 
 ### Git Command Restrictions
 
@@ -155,8 +174,12 @@ To use with Claude Desktop, add to your `claude_desktop_config.json`:
       "type": "stdio",
       "command": "/path/to/target/release/command-runner-mcp-server-rust",
       "args": [],
-      "env": {}
+      "env": {
+        "BLOCKED_PATHS": "/etc;/root;/home/user/.ssh"
+      }
     }
   }
 }
 ```
+
+The `BLOCKED_PATHS` environment variable is optional. If not set, no paths are blocked by default.

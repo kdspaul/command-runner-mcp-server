@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::executor::run_command;
 use crate::request::ExecutionContext;
-use crate::security::{validate_argument, validate_not_flag, validate_path, Validatable, ValidationError};
+use crate::security::{validate_argument, validate_no_traversal, validate_not_flag, validate_path, Validatable, ValidationError};
 
 /// Request parameters for the ls tool
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -21,7 +21,9 @@ fn default_path() -> String {
 impl Validatable for LsRequest {
     fn validate(&self) -> Result<(), ValidationError> {
         validate_argument(&self.path)?;
-        validate_not_flag(&self.path)?; // Prevent path from being interpreted as a flag
+        validate_not_flag(&self.path)?;
+        // Block ".." to keep code simple and prevent any attempts to access blocked paths
+        validate_no_traversal(&self.path)?;
         validate_path(&self.path)?;
         Ok(())
     }
@@ -148,28 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blocks_blocked_path_exact() {
-        let req = LsRequest {
-            path: "/blocked".to_string(),
-        };
-        assert!(matches!(
-            req.validate(),
-            Err(ValidationError::BlockedPath(_))
-        ));
-    }
-
-    #[test]
-    fn test_validate_blocks_blocked_path_subdir() {
-        let req = LsRequest {
-            path: "/blocked/subdir".to_string(),
-        };
-        assert!(matches!(
-            req.validate(),
-            Err(ValidationError::BlockedPath(_))
-        ));
-    }
-
-    #[test]
     fn test_validate_allows_other_paths() {
         let req = LsRequest {
             path: "/tmp".to_string(),
@@ -205,5 +185,27 @@ mod tests {
             path: "/path/with-dash/file".to_string(),
         };
         assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_blocks_path_traversal() {
+        let req = LsRequest {
+            path: "/tmp/../etc".to_string(),
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::PathTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_blocks_path_traversal_relative() {
+        let req = LsRequest {
+            path: "../secret".to_string(),
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::PathTraversal(_))
+        ));
     }
 }

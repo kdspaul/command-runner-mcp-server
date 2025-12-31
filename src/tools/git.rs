@@ -23,11 +23,10 @@ impl Validatable for GitRequest {
     fn validate(&self) -> Result<(), ValidationError> {
         // Validate subcommand is allowed
         if !ALLOWED_GIT_SUBCOMMANDS.contains(&self.subcommand.as_str()) {
-            return Err(ValidationError::ShellInjection(format!(
-                "Subcommand '{}' is not allowed. Allowed subcommands: {}",
-                self.subcommand,
-                ALLOWED_GIT_SUBCOMMANDS.join(", ")
-            )));
+            return Err(ValidationError::DisallowedSubcommand {
+                subcommand: self.subcommand.clone(),
+                allowed: ALLOWED_GIT_SUBCOMMANDS.join(", "),
+            });
         }
 
         // Check for shell injection in subcommand
@@ -87,8 +86,10 @@ mod tests {
             subcommand: "push".to_string(),
             args: vec![],
         };
-        let err = req.validate().unwrap_err();
-        assert!(err.to_string().contains("not allowed"));
+        assert!(matches!(
+            req.validate(),
+            Err(ValidationError::DisallowedSubcommand { .. })
+        ));
     }
 
     #[test]

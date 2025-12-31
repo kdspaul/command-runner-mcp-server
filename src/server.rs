@@ -51,11 +51,16 @@ All tools support these optional parameters:
 - sort: sort lines alphabetically
 - unique: remove consecutive duplicate lines
 - timeout_ms: command timeout in milliseconds
-- working_dir: directory to run command in
+- working_dir: directory to run command in (must be an absolute path starting with '/')
 - env: environment variables as {"KEY": "value"}
 - transform_order: array specifying order of transformations ["grep", "sort", "unique", "head", "tail"]
 
-Default transform order: grep -> sort -> unique -> head -> tail"#;
+Default transform order: grep -> sort -> unique -> head -> tail
+
+Security constraints:
+- Paths must not contain ".." (parent directory traversal is not allowed)
+- working_dir must be an absolute path (starting with '/')
+- Certain paths may be blocked by the server configuration (BLOCKED_PATHS env var)"#;
 
 #[rmcp::tool_router]
 impl CommandRunnerServer {
@@ -67,6 +72,8 @@ Supports output transformations:
 - head/tail: limit to first/last N lines
 - sort: sort lines alphabetically
 - unique: remove consecutive duplicates
+
+Security: path must not contain \"..\" and working_dir must be an absolute path.
 
 Example - list only .rs files, sorted: {\"path\": \"src\", \"grep_pattern\": \"\\\\.rs$\", \"sort\": true}")]
     fn ls_tool(&self, Parameters(req): Parameters<ToolRequest<LsRequest>>) -> String {
@@ -81,6 +88,8 @@ Supports output transformations:
 - head/tail: limit to first/last N lines
 - sort: sort lines alphabetically
 - unique: remove consecutive duplicates
+
+Security: working_dir must be an absolute path and must not contain \"..\".
 
 Example - show only modified files: {\"subcommand\": \"status\", \"grep_pattern\": \"modified:\"}")]
     fn git(&self, Parameters(req): Parameters<ToolRequest<GitRequest>>) -> String {

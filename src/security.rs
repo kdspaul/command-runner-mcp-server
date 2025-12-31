@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// Characters that could be used for shell injection
 const SHELL_INJECTION_CHARS: &[char] = &[
@@ -12,8 +13,16 @@ const SHELL_INJECTION_CHARS_DISPLAY: &str = "; | & $ ` ( ) { } [ ] < > ' \" \\ *
 /// Hint about available transformations for error messages
 const TRANSFORM_HINT: &str = "Use grep_pattern, sed_pattern, head, tail, sort, or unique parameters to filter/transform output instead of shell operators.";
 
-/// The blocked path prefixes (fictional paths for demonstration)
-const BLOCKED_PATHS: &[&str] = &["/blocked", "/also-blocked"];
+/// Blocked paths loaded from BLOCKED_PATHS environment variable at startup.
+/// Format: semicolon-separated list of absolute paths, e.g., "/etc;/root;/home/user/.ssh"
+static BLOCKED_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    std::env::var("BLOCKED_PATHS")
+        .unwrap_or_default()
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().to_string())
+        .collect()
+});
 
 /// Environment variable names that could be used for code injection or privilege escalation
 const DANGEROUS_ENV_VARS: &[&str] = &[
@@ -44,6 +53,9 @@ pub enum ValidationError {
     BlockedPath(String),
     FlagInjection(String),
     DangerousEnvVar(String),
+    PathTraversal(String),
+    RelativeWorkingDir(String),
+    DisallowedSubcommand { subcommand: String, allowed: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -71,6 +83,27 @@ impl std::fmt::Display for ValidationError {
                     f,
                     "Error: Setting environment variable '{}' is not allowed for security reasons.",
                     var
+                )
+            }
+            ValidationError::PathTraversal(path) => {
+                write!(
+                    f,
+                    "Error: Path '{}' contains '..', which is not allowed for security reasons.",
+                    path
+                )
+            }
+            ValidationError::RelativeWorkingDir(dir) => {
+                write!(
+                    f,
+                    "Error: working_dir '{}' must be an absolute path (starting with '/').",
+                    dir
+                )
+            }
+            ValidationError::DisallowedSubcommand { subcommand, allowed } => {
+                write!(
+                    f,
+                    "Error: Subcommand '{}' is not allowed. Allowed subcommands: {}",
+                    subcommand, allowed
                 )
             }
         }
@@ -111,6 +144,27 @@ pub fn validate_not_flag(arg: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Check if a path contains ".." (parent directory traversal)
+pub fn contains_traversal(path: &str) -> bool {
+    path.contains("..")
+}
+
+/// Validate that a path doesn't contain ".." traversal
+pub fn validate_no_traversal(path: &str) -> Result<(), ValidationError> {
+    if contains_traversal(path) {
+        return Err(ValidationError::PathTraversal(path.to_string()));
+    }
+    Ok(())
+}
+
+/// Validate that a path is absolute (starts with '/')
+pub fn validate_absolute_path(path: &str) -> Result<(), ValidationError> {
+    if !path.starts_with('/') {
+        return Err(ValidationError::RelativeWorkingDir(path.to_string()));
+    }
+    Ok(())
+}
+
 /// Check if an environment variable name is dangerous
 fn is_dangerous_env_var(name: &str) -> bool {
     let upper = name.to_uppercase();
@@ -135,10 +189,10 @@ pub fn validate_env_var(name: &str, value: &str) -> Result<(), ValidationError> 
     Ok(())
 }
 
-/// Resolve a path and check if it matches or is under any blocked path
-/// Returns the matched blocked path if found, None otherwise
-fn find_blocked_path(path: &str) -> Option<&'static str> {
-    // Resolve the path to catch relative path traversal to blocked directories
+/// Internal implementation for testability - takes blocked_paths as parameter.
+/// Resolves a path and checks if it matches or is under any blocked path.
+fn find_blocked_path_impl(path: &str, blocked_paths: &[String]) -> Option<String> {
+    // Resolve the path to get absolute path for comparison
     let resolved_path = if path.starts_with('/') {
         Path::new(path).to_path_buf()
     } else {
@@ -148,7 +202,7 @@ fn find_blocked_path(path: &str) -> Option<&'static str> {
         }
     };
 
-    // Canonicalize to resolve symlinks and .. components
+    // Try to canonicalize to resolve symlinks (.. is already blocked by validate_no_traversal)
     let canonical_path = match resolved_path.canonicalize() {
         Ok(p) => p,
         Err(_) => resolved_path, // Path might not exist yet, use as-is
@@ -156,18 +210,24 @@ fn find_blocked_path(path: &str) -> Option<&'static str> {
 
     // Check if path is or is under any blocked path
     let path_str = canonical_path.to_string_lossy();
-    for blocked in BLOCKED_PATHS {
+    for blocked in blocked_paths {
         if path_str == *blocked || path_str.starts_with(&format!("{}/", blocked)) {
-            return Some(blocked);
+            return Some(blocked.clone());
         }
     }
     None
 }
 
+/// Resolve a path and check if it matches or is under any blocked path.
+/// Uses the global BLOCKED_PATHS from environment variable.
+fn find_blocked_path(path: &str) -> Option<String> {
+    find_blocked_path_impl(path, &BLOCKED_PATHS)
+}
+
 /// Validate that a path is not blocked
 pub fn validate_path(path: &str) -> Result<(), ValidationError> {
     if let Some(blocked) = find_blocked_path(path) {
-        return Err(ValidationError::BlockedPath(blocked.to_string()));
+        return Err(ValidationError::BlockedPath(blocked));
     }
     Ok(())
 }
@@ -210,30 +270,38 @@ mod tests {
 
     #[test]
     fn test_find_blocked_path_blocks_exact() {
-        assert_eq!(find_blocked_path("/blocked"), Some("/blocked"));
+        let blocked = vec!["/blocked".to_string()];
+        assert_eq!(
+            find_blocked_path_impl("/blocked", &blocked),
+            Some("/blocked".to_string())
+        );
     }
 
     #[test]
     fn test_find_blocked_path_blocks_subpath() {
-        assert_eq!(find_blocked_path("/blocked/subdir"), Some("/blocked"));
+        let blocked = vec!["/blocked".to_string()];
+        assert_eq!(
+            find_blocked_path_impl("/blocked/subdir", &blocked),
+            Some("/blocked".to_string())
+        );
     }
 
     #[test]
     fn test_find_blocked_path_blocks_also_blocked_exact() {
-        assert_eq!(find_blocked_path("/also-blocked"), Some("/also-blocked"));
+        let blocked = vec!["/also-blocked".to_string()];
+        assert_eq!(
+            find_blocked_path_impl("/also-blocked", &blocked),
+            Some("/also-blocked".to_string())
+        );
     }
 
     #[test]
     fn test_find_blocked_path_blocks_also_blocked_subpath() {
-        assert_eq!(find_blocked_path("/also-blocked/subdir"), Some("/also-blocked"));
-    }
-
-    #[test]
-    fn test_validate_path_returns_error_for_blocked() {
-        assert!(matches!(
-            validate_path("/blocked"),
-            Err(ValidationError::BlockedPath(_))
-        ));
+        let blocked = vec!["/also-blocked".to_string()];
+        assert_eq!(
+            find_blocked_path_impl("/also-blocked/subdir", &blocked),
+            Some("/also-blocked".to_string())
+        );
     }
 
     #[test]
@@ -356,5 +424,120 @@ mod tests {
     fn test_validate_env_var_allows_safe_vars() {
         assert!(validate_env_var("MY_VAR", "safe_value").is_ok());
         assert!(validate_env_var("DEBUG", "true").is_ok());
+    }
+
+    // Path traversal tests
+    #[test]
+    fn test_contains_traversal_detects_parent_dir() {
+        assert!(contains_traversal("../secret"));
+        assert!(contains_traversal("/tmp/../etc"));
+        assert!(contains_traversal("foo/bar/../baz"));
+    }
+
+    #[test]
+    fn test_contains_traversal_allows_safe_paths() {
+        assert!(!contains_traversal("/tmp/file"));
+        assert!(!contains_traversal("relative/path"));
+        assert!(!contains_traversal("."));
+    }
+
+    #[test]
+    fn test_validate_no_traversal_rejects_parent_dir() {
+        assert!(matches!(
+            validate_no_traversal("../secret"),
+            Err(ValidationError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            validate_no_traversal("/tmp/../etc"),
+            Err(ValidationError::PathTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_no_traversal_allows_safe_paths() {
+        assert!(validate_no_traversal("/tmp/file").is_ok());
+        assert!(validate_no_traversal("relative/path").is_ok());
+        assert!(validate_no_traversal(".").is_ok());
+    }
+
+    // Absolute path tests
+    #[test]
+    fn test_validate_absolute_path_rejects_relative() {
+        assert!(matches!(
+            validate_absolute_path("relative/path"),
+            Err(ValidationError::RelativeWorkingDir(_))
+        ));
+        assert!(matches!(
+            validate_absolute_path("./current"),
+            Err(ValidationError::RelativeWorkingDir(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_absolute_path_allows_absolute() {
+        assert!(validate_absolute_path("/tmp").is_ok());
+        assert!(validate_absolute_path("/home/user/dir").is_ok());
+    }
+
+    // Blocked path tests using temp directories
+    #[test]
+    fn test_blocked_path_with_temp_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        // Use canonicalized path (resolves symlinks like /var -> /private/var on macOS)
+        let blocked_path = temp_dir.path().canonicalize().unwrap();
+        let blocked_path_str = blocked_path.to_string_lossy().to_string();
+        let blocked = vec![blocked_path_str.clone()];
+
+        // Exact match should be blocked
+        assert_eq!(
+            find_blocked_path_impl(&blocked_path_str, &blocked),
+            Some(blocked_path_str.clone())
+        );
+    }
+
+    #[test]
+    fn test_blocked_path_subdir_with_temp_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blocked_path = temp_dir.path().canonicalize().unwrap();
+        let blocked_path_str = blocked_path.to_string_lossy().to_string();
+        let blocked = vec![blocked_path_str.clone()];
+
+        // Subpath should be blocked (non-existent subpath is resolved relative to parent)
+        let subpath = format!("{}/subdir/file.txt", blocked_path_str);
+        assert_eq!(
+            find_blocked_path_impl(&subpath, &blocked),
+            Some(blocked_path_str)
+        );
+    }
+
+    #[test]
+    fn test_not_blocked_when_not_in_list() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let safe_path = temp_dir.path().canonicalize().unwrap();
+        let safe_path_str = safe_path.to_string_lossy().to_string();
+        let blocked = vec!["/some/other/path".to_string()];
+
+        // Should not be blocked when not in list
+        assert!(find_blocked_path_impl(&safe_path_str, &blocked).is_none());
+    }
+
+    #[test]
+    fn test_blocked_path_with_symlink() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blocked_path = temp_dir.path().canonicalize().unwrap();
+        let blocked_path_str = blocked_path.to_string_lossy().to_string();
+        let blocked = vec![blocked_path_str.clone()];
+
+        // Create a symlink to the blocked directory
+        let link_dir = tempfile::TempDir::new().unwrap();
+        let link_path = link_dir.path().join("link");
+        std::os::unix::fs::symlink(temp_dir.path(), &link_path).unwrap();
+
+        // Following symlink should detect blocked path
+        let link_path_str = link_path.to_string_lossy().to_string();
+        assert_eq!(
+            find_blocked_path_impl(&link_path_str, &blocked),
+            Some(blocked_path_str)
+        );
     }
 }
