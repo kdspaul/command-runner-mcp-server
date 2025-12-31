@@ -11,7 +11,7 @@ const SHELL_INJECTION_CHARS: &[char] = &[
 const SHELL_INJECTION_CHARS_DISPLAY: &str = "; | & $ ` ( ) { } [ ] < > ' \" \\ * ? ! #";
 
 /// Hint about available transformations for error messages
-const TRANSFORM_HINT: &str = "Use grep_pattern, sed_pattern, head, tail, sort, or unique parameters to filter/transform output instead of shell operators.";
+const TRANSFORM_HINT: &str = "Use grep_pattern, head, tail, sort, or unique parameters to filter/transform output instead of shell operators.";
 
 /// Blocked paths loaded from BLOCKED_PATHS environment variable at startup.
 /// Format: semicolon-separated list of absolute paths, e.g., "/etc;/root;/home/user/.ssh"
