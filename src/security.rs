@@ -232,6 +232,40 @@ pub fn validate_path(path: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Internal implementation for testability - takes blocked_paths as parameter.
+fn validate_path_with_working_dir_impl(path: &str, working_dir: &str, blocked_paths: &[String]) -> Result<(), ValidationError> {
+    if !working_dir.starts_with('/') {
+        return Err(ValidationError::RelativeWorkingDir(working_dir.to_string()));
+    }
+
+    let resolved = if path.starts_with('/') {
+        Path::new(path).to_path_buf()
+    } else {
+        Path::new(working_dir).join(path)
+    };
+
+    // Canonicalize to resolve any remaining path components
+    let canonical = match resolved.canonicalize() {
+        Ok(p) => p,
+        Err(_) => resolved, // Path might not exist, use as-is
+    };
+
+    let path_str = canonical.to_string_lossy();
+    for blocked in blocked_paths {
+        if path_str == *blocked || path_str.starts_with(&format!("{}/", blocked)) {
+            return Err(ValidationError::BlockedPath(blocked.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Validate that a path resolved against a working directory is not blocked.
+/// This handles the case where a relative path combined with working_dir could
+/// access a blocked location.
+pub fn validate_path_with_working_dir(path: &str, working_dir: &str) -> Result<(), ValidationError> {
+    validate_path_with_working_dir_impl(path, working_dir, &BLOCKED_PATHS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +573,67 @@ mod tests {
             find_blocked_path_impl(&link_path_str, &blocked),
             Some(blocked_path_str)
         );
+    }
+
+    // Tests for validate_path_with_working_dir_impl
+    #[test]
+    fn test_validate_path_with_working_dir_blocks_relative_path_to_blocked() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blocked_dir = temp_dir.path().join("blocked");
+        std::fs::create_dir(&blocked_dir).unwrap();
+
+        let blocked_path = blocked_dir.canonicalize().unwrap();
+        let blocked_path_str = blocked_path.to_string_lossy().to_string();
+        let blocked = vec![blocked_path_str.clone()];
+
+        let working_dir = temp_dir.path().canonicalize().unwrap();
+        let working_dir_str = working_dir.to_string_lossy().to_string();
+
+        // Relative path "blocked" from working_dir should be blocked
+        assert!(matches!(
+            validate_path_with_working_dir_impl("blocked", &working_dir_str, &blocked),
+            Err(ValidationError::BlockedPath(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_path_with_working_dir_allows_safe_relative_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let safe_dir = temp_dir.path().join("safe");
+        std::fs::create_dir(&safe_dir).unwrap();
+
+        let blocked = vec!["/some/other/blocked/path".to_string()];
+
+        let working_dir = temp_dir.path().canonicalize().unwrap();
+        let working_dir_str = working_dir.to_string_lossy().to_string();
+
+        // Relative path "safe" from working_dir should be allowed
+        assert!(validate_path_with_working_dir_impl("safe", &working_dir_str, &blocked).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_with_working_dir_rejects_relative_working_dir() {
+        let blocked = vec![];
+        assert!(matches!(
+            validate_path_with_working_dir_impl(".", "relative/dir", &blocked),
+            Err(ValidationError::RelativeWorkingDir(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_path_with_working_dir_absolute_path_ignores_working_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let blocked_dir = temp_dir.path().join("blocked");
+        std::fs::create_dir(&blocked_dir).unwrap();
+
+        let blocked_path = blocked_dir.canonicalize().unwrap();
+        let blocked_path_str = blocked_path.to_string_lossy().to_string();
+        let blocked = vec![blocked_path_str.clone()];
+
+        // Absolute path should be checked directly, ignoring working_dir
+        assert!(matches!(
+            validate_path_with_working_dir_impl(&blocked_path_str, "/some/other/dir", &blocked),
+            Err(ValidationError::BlockedPath(_))
+        ));
     }
 }

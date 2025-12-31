@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::executor::run_command;
 use crate::request::ExecutionContext;
-use crate::security::{validate_argument, validate_no_traversal, validate_not_flag, validate_path, Validatable, ValidationError};
+use crate::security::{validate_argument, validate_no_traversal, validate_not_flag, validate_path, validate_path_with_working_dir, Validatable, ValidationError};
 
 /// Request parameters for the ls tool
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -31,6 +31,13 @@ impl Validatable for LsRequest {
 
 /// Execute the ls command with a validated request and execution context
 pub fn execute(req: &LsRequest, ctx: &ExecutionContext) -> String {
+    // Validate that path combined with working_dir doesn't access blocked paths
+    if let Some(ref working_dir) = ctx.working_dir {
+        if let Err(e) = validate_path_with_working_dir(&req.path, working_dir) {
+            return format!("Error: {}", e);
+        }
+    }
+
     let mut cmd = Command::new("ls");
     cmd.args(["-al", &req.path]);
     run_command(cmd, ctx).into_string()
